@@ -9,15 +9,21 @@ CONFIG_DIR="$HOME/.vn_translator"
 REGION_FILE="$CONFIG_DIR/region.conf"
 LAST_TEXT_FILE="$CONFIG_DIR/last_text.txt"
 LAST_TRANSLATION_FILE="$CONFIG_DIR/last_translation.txt"
+HISTORY_FILE="$CONFIG_DIR/history.log"
 TEMP_IMAGE="/tmp/vn_translator_capture.png"
+
+# Similarity threshold (0.0-1.0) - texts above this are considered "same"
+SIMILARITY_THRESHOLD=${VN_SIMILARITY_THRESHOLD:-0.85}
 
 # Polling interval in seconds
 POLL_INTERVAL=${VN_POLL_INTERVAL:-0.5}
 
 mkdir -p "$CONFIG_DIR"
 
-# Path to the Python helper script (adjust as needed)
-MEIKIOCR_HELPER="$(dirname "$0")/meikiocr_helper.py"
+# Path to the Python helper scripts (adjust as needed)
+SCRIPT_DIR="$(dirname "$0")"
+MEIKIOCR_HELPER="$SCRIPT_DIR/meikiocr_helper.py"
+SIMILARITY_CHECKER="$SCRIPT_DIR/similarity_check.py"
 
 # Virtual environment path (adjust if you created it elsewhere)
 VENV_PATH="$HOME/vn-translator-env"
@@ -39,10 +45,16 @@ check_deps() {
         exit 1
     fi
     
-    # Check for MeikiOCR helper script
+    # Check for helper scripts
     if [ ! -f "$MEIKIOCR_HELPER" ]; then
         echo "Error: MeikiOCR helper script not found at: $MEIKIOCR_HELPER"
         echo "Please ensure meikiocr_helper.py is in the same directory as this script"
+        exit 1
+    fi
+
+    if [ ! -f "$SIMILARITY_CHECKER" ]; then
+        echo "Error: Similarity checker not found at: $SIMILARITY_CHECKER"
+        echo "Please ensure similarity_check.py is in the same directory as this script"
         exit 1
     fi
     
@@ -164,6 +176,8 @@ monitor_region() {
     echo "Monitoring region: $REGION"
     echo "Using MeikiOCR for Japanese text recognition..."
     echo "Polling interval: ${POLL_INTERVAL}s (set VN_POLL_INTERVAL to change)"
+    echo "Similarity threshold: ${SIMILARITY_THRESHOLD} (set VN_SIMILARITY_THRESHOLD to change)"
+    echo "History log: $HISTORY_FILE"
     echo "Press Ctrl+C to stop"
     echo "========================================"
     
@@ -186,20 +200,29 @@ monitor_region() {
         CLEAN_TEXT=$(clean_japanese_text "$TEXT")
         
         if [ $? -eq 0 ] && [ -n "$CLEAN_TEXT" ]; then
-            # Check if text changed
+            # Check if text changed (using fuzzy matching)
             LAST_TEXT=$(cat "$LAST_TEXT_FILE" 2>/dev/null)
-            
-            if [ "$CLEAN_TEXT" != "$LAST_TEXT" ]; then
+
+            # Use similarity check - exit 0 means similar (skip), exit 1 means different (process)
+            if [ -z "$LAST_TEXT" ] || ! ${PYTHON_CMD:-python3} "$SIMILARITY_CHECKER" "$CLEAN_TEXT" "$LAST_TEXT" "$SIMILARITY_THRESHOLD"; then
                 # Save current text
                 echo "$CLEAN_TEXT" > "$LAST_TEXT_FILE"
-                
+
                 # Translate
                 TRANSLATION=$(translate_text "$CLEAN_TEXT")
-                
+
                 if [ $? -eq 0 ]; then
                     # Save translation
                     echo "$TRANSLATION" > "$LAST_TRANSLATION_FILE"
                     display_output "$CLEAN_TEXT" "$TRANSLATION"
+
+                    # Append to history log
+                    {
+                        echo "[$(date '+%Y-%m-%d %H:%M:%S')]"
+                        echo "JP: $CLEAN_TEXT"
+                        echo "EN: $TRANSLATION"
+                        echo "---"
+                    } >> "$HISTORY_FILE"
                 fi
             fi
         fi
@@ -273,8 +296,10 @@ case "${1:-monitor}" in
         echo "  help          Show this help"
         echo ""
         echo "Environment Variables:"
-        echo "  VN_POLL_INTERVAL   Seconds between checks (default: 0.5)"
-        echo "                     Increase to reduce CPU usage (e.g., 1.0 or 1.5)"
+        echo "  VN_POLL_INTERVAL        Seconds between checks (default: 0.5)"
+        echo "                          Increase to reduce CPU usage (e.g., 1.0 or 1.5)"
+        echo "  VN_SIMILARITY_THRESHOLD Similarity threshold 0.0-1.0 (default: 0.85)"
+        echo "                          Higher = more likely to skip similar lines"
         echo ""
         echo "Requirements:"
         echo "  - meikiocr_helper.py in the same directory"
