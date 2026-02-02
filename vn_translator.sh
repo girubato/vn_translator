@@ -18,7 +18,40 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+check_deps() {
+    # Run dependency check from the OCR script (just the check, not the full monitor)
+    if ! "$OCR_SCRIPT" check-deps 2>/dev/null; then
+        # Fallback: check directly if the OCR script doesn't support check-deps
+        local VENV_PATH="$HOME/vn-translator-env"
+        if [ -d "$VENV_PATH" ]; then
+            if ! "$VENV_PATH/bin/python3" -c "import meikiocr" 2>/dev/null; then
+                echo -e "${RED}MeikiOCR not found in virtual environment${NC}"
+                echo ""
+                echo "Run this to install dependencies:"
+                echo "  source $VENV_PATH/bin/activate && pip install meikiocr opencv-python numpy"
+                return 1
+            fi
+        else
+            if ! python3 -c "import meikiocr" 2>/dev/null; then
+                echo -e "${RED}MeikiOCR not found${NC}"
+                echo ""
+                echo "Set up a virtual environment first:"
+                echo "  python3 -m venv ~/vn-translator-env"
+                echo "  source ~/vn-translator-env/bin/activate"
+                echo "  pip install meikiocr opencv-python numpy"
+                return 1
+            fi
+        fi
+    fi
+    return 0
+}
+
 start_services() {
+    # Check dependencies first
+    if ! check_deps; then
+        exit 1
+    fi
+
     # Check if already running
     if [ -f "$PID_FILE" ]; then
         if check_running; then
@@ -174,6 +207,11 @@ cleanup() {
 }
 
 run_foreground() {
+    # Check dependencies first
+    if ! check_deps; then
+        exit 1
+    fi
+
     # Check if region is set
     if [ ! -f "$CONFIG_DIR/region.conf" ]; then
         echo -e "${YELLOW}No region set. Setting up now...${NC}"
